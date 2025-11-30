@@ -1,6 +1,9 @@
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Date, DateTime
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from datetime import datetime
+from contextlib import contextmanager
+from sqlalchemy.exc import SQLAlchemyError
+import logging
 
 Base = declarative_base()
 
@@ -101,3 +104,16 @@ def init_db(db_path='sqlite:///reading_club.db'):
     engine = create_engine(db_path)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
+
+@contextmanager
+def get_session_scope(SessionFactory):
+    """Provide a transactional scope around a series of operations."""
+    session = SessionFactory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

@@ -1,5 +1,5 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from database import init_db, User, Book, UserBook
 
 Session = init_db()
@@ -57,28 +57,40 @@ async def my_books_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n✅ <b>Last Completed:</b> <i>{latest.book.title}</i> ({latest.book.category}) 🎉\n"
         
     msg += "\n<b>What would you like to do?</b>"
-    keyboard = [["Add Book", "Cancel"]]
+    keyboard = [
+        [InlineKeyboardButton("📚 Add Book", callback_data="mb_add_book")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="mb_cancel")]
+    ]
     
-    await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True), parse_mode='HTML')
+    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     session.close()
     return MB_MENU
 
 async def mb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "Add Book":
-        keyboard = [["PRL", "RNK"]]
-        await update.message.reply_text("Which category?", reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True))
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "mb_add_book":
+        keyboard = [
+            [InlineKeyboardButton("📕 PRL", callback_data="mb_cat_prl")],
+            [InlineKeyboardButton("📗 RNK", callback_data="mb_cat_rnk")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="mb_cancel")]
+        ]
+        await query.edit_message_text("Which category?", reply_markup=InlineKeyboardMarkup(keyboard))
         return MB_ADD_SELECT_CAT
     else:
-        await update.message.reply_text("Done.", reply_markup=ReplyKeyboardRemove())
+        await query.edit_message_text("✅ Done.")
         return ConversationHandler.END
 
 async def mb_add_select_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    category = update.message.text
-    if category not in ['PRL', 'RNK']:
-        await update.message.reply_text("Invalid category.")
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "mb_cancel":
+        await query.edit_message_text("✅ Cancelled.")
         return ConversationHandler.END
-        
+    
+    category = "PRL" if query.data == "mb_cat_prl" else "RNK"
     context.user_data['mb_category'] = category
     
     session = Session()
@@ -90,28 +102,35 @@ async def mb_add_select_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     available = [b for b in all_books if b.id not in user_book_ids]
     
     if not available:
-        await update.message.reply_text("You have added all available books in this category.", reply_markup=ReplyKeyboardRemove())
+        await query.edit_message_text("✅ You have added all available books in this category.")
         session.close()
         return ConversationHandler.END
         
-    book_titles = [[b.title] for b in available]
-    await update.message.reply_text("Select a book:", reply_markup=ReplyKeyboardMarkup(book_titles, one_time_keyboard=True))
+    buttons = [[InlineKeyboardButton(b.title, callback_data=f"mb_book_{b.id}")] for b in available]
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="mb_cancel")])
+    await query.edit_message_text("Select a book:", reply_markup=InlineKeyboardMarkup(buttons))
     session.close()
     return MB_ADD_SELECT_BOOK
 
 async def mb_add_select_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    title = update.message.text
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "mb_cancel":
+        await query.edit_message_text("✅ Cancelled.")
+        return ConversationHandler.END
+    
+    book_id = int(query.data.split('_')[2])
     session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    book = session.query(Book).filter_by(title=title, club_id=user.club_id, category=context.user_data['mb_category']).first()
+    book = session.query(Book).get(book_id)
     
     if book:
         context.user_data['mb_book_id'] = book.id
-        await update.message.reply_text(f"How many pages does '{title}' have?", reply_markup=ReplyKeyboardRemove())
+        await query.edit_message_text(f"How many pages does '{book.title}' have?")
         session.close()
         return MB_ADD_ENTER_PAGES
     else:
-        await update.message.reply_text("Invalid book.")
+        await query.edit_message_text("Invalid book.")
         session.close()
         return ConversationHandler.END
 
@@ -121,14 +140,19 @@ async def mb_add_enter_pages(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data['mb_total_pages'] = pages
         
         # Ask if they've already read this book
-        keyboard = [["✅ Already finished", "📖 In progress", "🆕 Starting fresh"]]
+        keyboard = [
+            [InlineKeyboardButton("✅ Already finished", callback_data="mb_status_finished")],
+            [InlineKeyboardButton("📖 In progress", callback_data="mb_status_progress")],
+            [InlineKeyboardButton("🆕 Starting fresh", callback_data="mb_status_fresh")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="mb_cancel")]
+        ]
         await update.message.reply_text(
             f"📚 <b>Book Status:</b>\n\n"
             f"Choose one:\n"
             f"✅ <b>Already finished</b> - Mark as completed\n"
             f"📖 <b>In progress</b> - Continue from where you stopped\n"
             f"🆕 <b>Starting fresh</b> - Begin from page 0",
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
         return MB_ADD_ALREADY_READ
@@ -139,7 +163,13 @@ async def mb_add_enter_pages(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils import get_today_date
     
-    choice = update.message.text
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "mb_cancel":
+        await query.edit_message_text("✅ Cancelled.")
+        return ConversationHandler.END
+    
     session = Session()
     user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
     
@@ -152,7 +182,7 @@ async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE
         if context.user_data['current_recommendation']['book_id'] == book_id:
             is_recommended_selection = True
     
-    if "finished" in choice.lower():
+    if query.data == "mb_status_finished":
         # Mark as already finished
         ub = UserBook(
             user_id=user.id,
@@ -179,26 +209,23 @@ async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE
         session.commit()
         session.close()
         
-        await update.message.reply_text(
+        await query.edit_message_text(
             f"✅ <b>Book added as completed!</b> 🎉\n\n"
             f"The book is marked as finished and will appear in your reading history.{bonus_msg}",
-            reply_markup=ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         return ConversationHandler.END
         
-    elif "progress" in choice.lower():
-
+    elif query.data == "mb_status_progress":
         # Ask for current page
-        await update.message.reply_text(
+        await query.edit_message_text(
             f"📖 <b>What page are you on?</b>\n\n"
             f"Enter the page number where you stopped (1-{total_pages}):",
-            reply_markup=ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         return MB_ADD_CURRENT_PAGE
         
-    else:
+    else:  # Starting fresh
         # Starting fresh
         ub = UserBook(
             user_id=user.id,
@@ -222,10 +249,9 @@ async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE
         session.commit()
         session.close()
         
-        await update.message.reply_text(
+        await query.edit_message_text(
             f"✅ <b>Book added successfully!</b>\n\n"
             f"You can start tracking your progress with /report.{bonus_msg}",
-            reply_markup=ReplyKeyboardRemove(),
             parse_mode='HTML'
         )
         return ConversationHandler.END
@@ -297,12 +323,13 @@ async def mb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 my_books_conv = ConversationHandler(
     entry_points=[CommandHandler('my_books', my_books_start)],
     states={
-        MB_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_menu)],
-        MB_ADD_SELECT_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_add_select_cat)],
-        MB_ADD_SELECT_BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_add_select_book)],
+        MB_MENU: [CallbackQueryHandler(mb_menu)],
+        MB_ADD_SELECT_CAT: [CallbackQueryHandler(mb_add_select_cat)],
+        MB_ADD_SELECT_BOOK: [CallbackQueryHandler(mb_add_select_book)],
         MB_ADD_ENTER_PAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_add_enter_pages)],
-        MB_ADD_ALREADY_READ: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_add_already_read)],
+        MB_ADD_ALREADY_READ: [CallbackQueryHandler(mb_add_already_read)],
         MB_ADD_CURRENT_PAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mb_add_current_page)],
     },
-    fallbacks=[CommandHandler('cancel', mb_cancel)]
+    fallbacks=[CommandHandler('cancel', mb_cancel)],
+    per_message=False
 )

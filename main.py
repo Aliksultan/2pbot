@@ -34,8 +34,22 @@ def main():
     init_badges(session)
     session.close()
     
+    # Post-init to set commands
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            ('start', 'Join the reading club'),
+            ('report', 'Submit your daily reading'),
+            ('my_books', 'Manage your books'),
+            ('profile', 'View stats & achievements'),
+            ('leaderboard', 'Club rankings'),
+            ('badges', 'See badge collection'),
+            ('reading_now', 'Currently reading books'),
+            ('change_club', 'Switch to a different club'),
+            ('help', 'Show help message')
+        ])
+
     # Build Application
-    application = ApplicationBuilder().token(TOKEN).build()
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     
     # Add Handlers
     application.add_handler(setup_conv)

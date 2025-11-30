@@ -1,6 +1,6 @@
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-from database import init_db, User, Club, Book, UserBook, DailyLog
+from database import init_db, User, Club, Book, UserBook, DailyLog, get_session_scope
 from utils import get_today_date, generate_contribution_graph
 from gamification import award_xp, check_badges, XP_PER_PAGE, XP_STREAK_BONUS, XP_BOOK_FINISHED, get_xp_for_next_level
 
@@ -14,85 +14,81 @@ ENTER_PAGES_PRL = 3
 ENTER_PAGES_RNK = 4
 REPORT_PRL = 5
 REPORT_RNK = 6
+SELECT_STATUS_PRL = 7
+SELECT_STATUS_RNK = 8
+ENTER_CURRENT_PAGE_PRL = 9
+ENTER_CURRENT_PAGE_RNK = 10
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     full_name = update.effective_user.full_name
     
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=user_id).first()
-    
-    if not user:
-        user = User(telegram_id=user_id, username=username, full_name=full_name)
-        session.add(user)
-        session.commit()
-        await update.message.reply_text(
-            "👋 <b>Welcome to the Reading Club Bot!</b>\n\n"
-            "To join your club, please enter the <b>Club Key</b> provided by your admin.\n"
-            "<i>(If you don't have one, ask your club administrator!)</i>",
-            parse_mode='HTML'
-        )
-        session.close()
-        return ENTER_KEY
-    else:
-        if user.club_id:
-            club_name = user.club.name if user.club else "Unknown"
+    with get_session_scope(Session) as session:
+        user = session.query(User).filter_by(telegram_id=user_id).first()
+        
+        if not user:
+            user = User(telegram_id=user_id, username=username, full_name=full_name)
+            session.add(user)
             await update.message.reply_text(
-                f"📚 You are already in <b>{club_name}</b>.\n\n"
-                f"Use /report to log your reading.\n"
-                f"Use /change_club to switch to a different club.",
+                "👋 <b>Welcome to the Reading Club Bot!</b>\n\n"
+                "To join your club, please enter the <b>Club Key</b> provided by your admin.\n"
+                "<i>(If you don't have one, ask your club administrator!)</i>",
                 parse_mode='HTML'
             )
-            session.close()
-            return ConversationHandler.END
-        else:
-            await update.message.reply_text("Please enter your <b>Club Key</b> to join:", parse_mode='HTML')
-            session.close()
             return ENTER_KEY
+        else:
+            if user.club_id:
+                club_name = user.club.name if user.club else "Unknown"
+                await update.message.reply_text(
+                    f"📚 You are already in <b>{club_name}</b>.\n\n"
+                    f"Use /report to log your reading.\n"
+                    f"Use /change_club to switch to a different club.",
+                    parse_mode='HTML'
+                )
+                return ConversationHandler.END
+            else:
+                await update.message.reply_text("Please enter your <b>Club Key</b> to join:", parse_mode='HTML')
+                return ENTER_KEY
 
 async def enter_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = update.message.text
-    session = Session()
-    club = session.query(Club).filter_by(key=key).first()
-    
-    if club:
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-        old_club_id = user.club_id
+    with get_session_scope(Session) as session:
+        club = session.query(Club).filter_by(key=key).first()
         
-        # Check if this is a club change
-        is_club_change = old_club_id is not None
-        
-        user.club_id = club.id
-        session.commit()
-        
-        context.user_data['club_id'] = club.id
-        
-        if is_club_change:
-            # User is changing clubs - preserve all their data
-            await update.message.reply_text(
-                f"✅ <b>Club Changed!</b>\n\n"
-                f"You've successfully joined <b>{club.name}</b>!\n\n"
-                f"📊 Your stats, streak, and progress have been preserved.\n"
-                f"📚 Use /my_books to add books from the new club library.\n"
-                f"📖 Use /report to continue your reading journey!",
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
-            )
-            session.close()
-            return ConversationHandler.END
-        else:
-            # New user joining for first time
-            context.user_data['selected_prl'] = []
-            context.user_data['selected_rnk'] = []
+        if club:
+            user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+            old_club_id = user.club_id
             
-            await show_prl_selection(update, context, session)
-            session.close()
-            return SELECT_BOOKS_PRL
-    else:
-        await update.message.reply_text("❌ <b>Invalid Key</b>. Please check with your admin and try again.", parse_mode='HTML')
-        session.close()
-        return ENTER_KEY
+            # Check if this is a club change
+            is_club_change = old_club_id is not None
+            
+            user.club_id = club.id
+            
+            context.user_data['club_id'] = club.id
+            
+            if is_club_change:
+                # User is changing clubs - preserve all their data
+                await update.message.reply_text(
+                    f"✅ <b>Club Changed!</b>\n\n"
+                    f"You've successfully joined <b>{club.name}</b>!\n\n"
+                    f"📊 Your stats, streak, and progress have been preserved.\n"
+                    f"📚 Use /my_books to add books from the new club library.\n"
+                    f"📖 Use /report to continue your reading journey!",
+                    parse_mode='HTML',
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            else:
+                # New user joining for first time
+                context.user_data['selected_prl'] = []
+                context.user_data['selected_rnk'] = []
+                
+                await show_prl_selection(update, context, session)
+                return SELECT_BOOKS_PRL
+        else:
+            await update.message.reply_text("❌ <b>Invalid Key</b>. Please check with your admin and try again.", parse_mode='HTML')
+            return ENTER_KEY
 
 async def show_prl_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, session):
     prl_books = session.query(Book).filter_by(club_id=context.user_data['club_id'], category='PRL').all()
@@ -100,140 +96,293 @@ async def show_prl_selection(update: Update, context: ContextTypes.DEFAULT_TYPE,
     selected_ids = [b['id'] for b in context.user_data.get('selected_prl', [])]
     available_books = [b for b in prl_books if b.id not in selected_ids]
     
-    book_titles = [[b.title] for b in available_books]
+    buttons = [[InlineKeyboardButton(b.title, callback_data=f"prl_{b.id}")] for b in available_books]
     if context.user_data.get('selected_prl'):
-        book_titles.append(["Done"])
+        buttons.append([InlineKeyboardButton("✅ Done", callback_data="prl_done")])
         
     await update.message.reply_text(
         "Choose a book from the PRL category (Select multiple, click Done when finished):",
-        reply_markup=ReplyKeyboardMarkup(book_titles, one_time_keyboard=True)
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 async def select_books_prl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    query = update.callback_query
+    await query.answer()
     
-    if text == "Done":
+    if query.data == "prl_done":
         if not context.user_data.get('selected_prl'):
-            await update.message.reply_text("Please select at least one PRL book.")
+            await query.edit_message_text("Please select at least one PRL book.")
             return SELECT_BOOKS_PRL
             
-        session = Session()
-        await show_rnk_selection(update, context, session)
-        session.close()
+        with get_session_scope(Session) as session:
+            await show_rnk_selection(query, context, session)
         return SELECT_BOOKS_RNK
         
-    session = Session()
-    book = session.query(Book).filter_by(title=text, club_id=context.user_data['club_id'], category='PRL').first()
-    
-    if book:
-        context.user_data['current_book_id'] = book.id
-        context.user_data['current_category'] = 'PRL'
-        await update.message.reply_text(
-            f"How many pages does '{book.title}' have?",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        session.close()
-        return ENTER_PAGES_PRL
-    else:
-        await update.message.reply_text("Invalid book. Please select from the keyboard.")
-        session.close()
-        return SELECT_BOOKS_PRL
+    with get_session_scope(Session) as session:
+        book_id = int(query.data.split('_')[1])
+        book = session.query(Book).get(book_id)
+        
+        if book:
+            context.user_data['current_book_id'] = book.id
+            context.user_data['current_category'] = 'PRL'
+            await query.edit_message_text(
+                f"How many pages does '{book.title}' have?"
+            )
+            return ENTER_PAGES_PRL
+        else:
+            await query.edit_message_text("Invalid book. Please try again.")
+            return SELECT_BOOKS_PRL
 
 async def enter_pages_prl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         pages = int(update.message.text)
         book_id = context.user_data['current_book_id']
         
-        # Store temporarily
-        context.user_data.setdefault('selected_prl', []).append({
-            'id': book_id,
-            'total_pages': pages
-        })
+        # Store total pages temporarily
+        context.user_data['temp_total_pages'] = pages
+        context.user_data['temp_book_id'] = book_id
         
-        session = Session()
-        await show_prl_selection(update, context, session)
-        session.close()
-        return SELECT_BOOKS_PRL
+        # Get book title for display
+        with get_session_scope(Session) as session:
+            book = session.query(Book).get(book_id)
+            book_title = book.title if book else "this book"
+        
+        # Ask for book status
+        keyboard = [
+            [InlineKeyboardButton("🆕 Starting fresh (page 0)", callback_data="status_prl_fresh")],
+            [InlineKeyboardButton("📖 Continue from page", callback_data="status_prl_continue")]
+        ]
+        await update.message.reply_text(
+            f"📚 <b>{book_title}</b>\n\n"
+            f"Are you starting fresh or continuing?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return SELECT_STATUS_PRL
     except ValueError:
         await update.message.reply_text("Please enter a valid number.")
         return ENTER_PAGES_PRL
 
-async def show_rnk_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, session):
+async def select_status_prl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    book_id = context.user_data['temp_book_id']
+    total_pages = context.user_data['temp_total_pages']
+    
+    if query.data == "status_prl_fresh":
+        # Starting fresh - save with current_page = 0
+        context.user_data.setdefault('selected_prl', []).append({
+            'id': book_id,
+            'total_pages': total_pages,
+            'current_page': 0
+        })
+        
+        await query.edit_message_text("✅ Book added (starting from page 0)")
+        
+        with get_session_scope(Session) as session:
+            await show_prl_selection(query, context, session)
+        return SELECT_BOOKS_PRL
+        
+    else:  # Continue from page
+        await query.edit_message_text(
+            f"📖 <b>What page are you on?</b>\n\n"
+            f"Enter the page number (1-{total_pages}):",
+            parse_mode='HTML'
+        )
+        return ENTER_CURRENT_PAGE_PRL
+
+async def enter_current_page_prl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        current_page = int(update.message.text)
+        total_pages = context.user_data['temp_total_pages']
+        book_id = context.user_data['temp_book_id']
+        
+        if current_page < 0 or current_page > total_pages:
+            await update.message.reply_text(
+                f"❌ Invalid page number!\n\n"
+                f"Please enter a number between 0 and {total_pages}:"
+            )
+            return ENTER_CURRENT_PAGE_PRL
+        
+        # Save with current page
+        context.user_data.setdefault('selected_prl', []).append({
+            'id': book_id,
+            'total_pages': total_pages,
+            'current_page': current_page
+        })
+        
+        progress_pct = int((current_page / total_pages) * 100) if total_pages > 0 else 0
+        await update.message.reply_text(
+            f"✅ Book added!\n"
+            f"📖 Progress: {current_page}/{total_pages} ({progress_pct}%)"
+        )
+        
+        with get_session_scope(Session) as session:
+            await show_prl_selection(update, context, session)
+        return SELECT_BOOKS_PRL
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid page number.")
+        return ENTER_CURRENT_PAGE_PRL
+
+async def show_rnk_selection(update_or_query, context: ContextTypes.DEFAULT_TYPE, session):
     rnk_books = session.query(Book).filter_by(club_id=context.user_data['club_id'], category='RNK').all()
     # Filter out already selected
     selected_ids = [b['id'] for b in context.user_data.get('selected_rnk', [])]
     available_books = [b for b in rnk_books if b.id not in selected_ids]
     
-    book_titles = [[b.title] for b in available_books]
+    buttons = [[InlineKeyboardButton(b.title, callback_data=f"rnk_{b.id}")] for b in available_books]
     if context.user_data.get('selected_rnk'):
-        book_titles.append(["Done"])
-        
-    await update.message.reply_text(
-        "Choose a book from the RNK category (Select multiple, click Done when finished):",
-        reply_markup=ReplyKeyboardMarkup(book_titles, one_time_keyboard=True)
-    )
+        buttons.append([InlineKeyboardButton("✅ Done", callback_data="rnk_done")])
+    
+    text = "Choose a book from the RNK category (Select multiple, click Done when finished):"
+    # Handle both message and callback query
+    if hasattr(update_or_query, 'edit_message_text'):
+        await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 async def select_books_rnk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    query = update.callback_query
+    await query.answer()
     
-    if text == "Done":
+    if query.data == "rnk_done":
         if not context.user_data.get('selected_rnk'):
-            await update.message.reply_text("Please select at least one RNK book.")
+            await query.edit_message_text("Please select at least one RNK book.")
             return SELECT_BOOKS_RNK
             
         # Save all books
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-        
-        for b in context.user_data['selected_prl']:
-            ub = UserBook(user_id=user.id, book_id=b['id'], total_pages=b['total_pages'])
-            session.add(ub)
+        with get_session_scope(Session) as session:
+            user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
             
-        for b in context.user_data['selected_rnk']:
-            ub = UserBook(user_id=user.id, book_id=b['id'], total_pages=b['total_pages'])
-            session.add(ub)
+            for b in context.user_data['selected_prl']:
+                ub = UserBook(
+                    user_id=user.id, 
+                    book_id=b['id'], 
+                    total_pages=b['total_pages'],
+                    current_page=b.get('current_page', 0)
+                )
+                session.add(ub)
+                
+            for b in context.user_data['selected_rnk']:
+                ub = UserBook(
+                    user_id=user.id, 
+                    book_id=b['id'], 
+                    total_pages=b['total_pages'],
+                    current_page=b.get('current_page', 0)
+                )
+                session.add(ub)
             
-        session.commit()
-        session.close()
-        
-        await update.message.reply_text("Setup complete! You will receive daily check-ins at 18:00.")
+        await query.edit_message_text("✅ Setup complete! You will receive daily check-ins at 18:00.")
         return ConversationHandler.END
         
-    session = Session()
-    book = session.query(Book).filter_by(title=text, club_id=context.user_data['club_id'], category='RNK').first()
-    
-    if book:
-        context.user_data['current_book_id'] = book.id
-        context.user_data['current_category'] = 'RNK'
-        await update.message.reply_text(
-            f"How many pages does '{book.title}' have?",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        session.close()
-        return ENTER_PAGES_RNK
-    else:
-        await update.message.reply_text("Invalid book. Please select from the keyboard.")
-        session.close()
-        return SELECT_BOOKS_RNK
+    with get_session_scope(Session) as session:
+        book_id = int(query.data.split('_')[1])
+        book = session.query(Book).get(book_id)
+        
+        if book:
+            context.user_data['current_book_id'] = book.id
+            context.user_data['current_category'] = 'RNK'
+            await query.edit_message_text(
+                f"How many pages does '{book.title}' have?"
+            )
+            return ENTER_PAGES_RNK
+        else:
+            await query.edit_message_text("Invalid book. Please try again.")
+            return SELECT_BOOKS_RNK
 
 async def enter_pages_rnk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         pages = int(update.message.text)
         book_id = context.user_data['current_book_id']
         
-        # Store temporarily
-        context.user_data.setdefault('selected_rnk', []).append({
-            'id': book_id,
-            'total_pages': pages
-        })
+        # Store total pages temporarily
+        context.user_data['temp_total_pages'] = pages
+        context.user_data['temp_book_id'] = book_id
         
+        # Get book title for display
         session = Session()
-        await show_rnk_selection(update, context, session)
+        book = session.query(Book).get(book_id)
+        book_title = book.title if book else "this book"
         session.close()
-        return SELECT_BOOKS_RNK
+        
+        # Ask for book status
+        keyboard = [
+            [InlineKeyboardButton("🆕 Starting fresh (page 0)", callback_data="status_rnk_fresh")],
+            [InlineKeyboardButton("📖 Continue from page", callback_data="status_rnk_continue")]
+        ]
+        await update.message.reply_text(
+            f"📚 <b>{book_title}</b>\n\n"
+            f"Are you starting fresh or continuing?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+        return SELECT_STATUS_RNK
     except ValueError:
         await update.message.reply_text("Please enter a valid number.")
         return ENTER_PAGES_RNK
+
+async def select_status_rnk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    book_id = context.user_data['temp_book_id']
+    total_pages = context.user_data['temp_total_pages']
+    
+    if query.data == "status_rnk_fresh":
+        # Starting fresh - save with current_page = 0
+        context.user_data.setdefault('selected_rnk', []).append({
+            'id': book_id,
+            'total_pages': total_pages,
+            'current_page': 0
+        })
+        
+        await query.edit_message_text("✅ Book added (starting from page 0)")
+        
+        with get_session_scope(Session) as session:
+            await show_rnk_selection(query, context, session)
+        return SELECT_BOOKS_RNK
+        
+    else:  # Continue from page
+        await query.edit_message_text(
+            f"📖 <b>What page are you on?</b>\n\n"
+            f"Enter the page number (1-{total_pages}):",
+            parse_mode='HTML'
+        )
+        return ENTER_CURRENT_PAGE_RNK
+
+async def enter_current_page_rnk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        current_page = int(update.message.text)
+        total_pages = context.user_data['temp_total_pages']
+        book_id = context.user_data['temp_book_id']
+        
+        if current_page < 0 or current_page > total_pages:
+            await update.message.reply_text(
+                f"❌ Invalid page number!\n\n"
+                f"Please enter a number between 0 and {total_pages}:"
+            )
+            return ENTER_CURRENT_PAGE_RNK
+        
+        # Save with current page
+        context.user_data.setdefault('selected_rnk', []).append({
+            'id': book_id,
+            'total_pages': total_pages,
+            'current_page': current_page
+        })
+        
+        progress_pct = int((current_page / total_pages) * 100) if total_pages > 0 else 0
+        await update.message.reply_text(
+            f"✅ Book added!\n"
+            f"📖 Progress: {current_page}/{total_pages} ({progress_pct}%)"
+        )
+        
+        with get_session_scope(Session) as session:
+            await show_rnk_selection(update, context, session)
+        return SELECT_BOOKS_RNK
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid page number.")
+        return ENTER_CURRENT_PAGE_RNK
 
 # Reporting Flow
 async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,7 +567,7 @@ async def finish_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grace_saved = user.grace_period_active and new_status == 'achieved'
     
     session.commit()
-    session.close()
+    # session.close() - Removed to keep session open for club stats calculation
     
     # Feedback on remaining pages
     remaining_msg = ""
@@ -814,12 +963,17 @@ setup_conv = ConversationHandler(
     ],
     states={
         ENTER_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_key)],
-        SELECT_BOOKS_PRL: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_books_prl)],
-        SELECT_BOOKS_RNK: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_books_rnk)],
+        SELECT_BOOKS_PRL: [CallbackQueryHandler(select_books_prl)],
+        SELECT_BOOKS_RNK: [CallbackQueryHandler(select_books_rnk)],
         ENTER_PAGES_PRL: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_pages_prl)],
         ENTER_PAGES_RNK: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_pages_rnk)],
+        SELECT_STATUS_PRL: [CallbackQueryHandler(select_status_prl)],
+        SELECT_STATUS_RNK: [CallbackQueryHandler(select_status_rnk)],
+        ENTER_CURRENT_PAGE_PRL: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_current_page_prl)],
+        ENTER_CURRENT_PAGE_RNK: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_current_page_rnk)],
     },
-    fallbacks=[CommandHandler('cancel', cancel)]
+    fallbacks=[CommandHandler('cancel', cancel)],
+    per_message=False
 )
 
 report_conv = ConversationHandler(
@@ -827,5 +981,6 @@ report_conv = ConversationHandler(
     states={
         REPORT_PRL: [MessageHandler(filters.TEXT & ~filters.COMMAND, report_book_progress)],
     },
-    fallbacks=[CommandHandler('cancel', cancel)]
+    fallbacks=[CommandHandler('cancel', cancel)],
+    per_message=False
 )
