@@ -301,10 +301,9 @@ async def enter_pages_rnk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['temp_book_id'] = book_id
         
         # Get book title for display
-        session = Session()
-        book = session.query(Book).get(book_id)
-        book_title = book.title if book else "this book"
-        session.close()
+        with get_session_scope(Session) as session:
+            book = session.query(Book).get(book_id)
+            book_title = book.title if book else "this book"
         
         # Ask for book status
         keyboard = [
@@ -386,25 +385,23 @@ async def enter_current_page_rnk(update: Update, context: ContextTypes.DEFAULT_T
 
 # Reporting Flow
 async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    # Only include books that are NOT finished
-    active_books = [ub for ub in user.readings if not ub.finished]
-    
-    if not active_books:
-        await update.message.reply_text(
-            "📚 You have no active books to report!\n\n"
-            "Use /my_books to add books you're currently reading.",
-            parse_mode='HTML'
-        )
-        session.close()
-        return ConversationHandler.END
+    with get_session_scope(Session) as session:
+        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-    context.user_data['report_queue'] = [ub.id for ub in active_books]
-    context.user_data['report_results'] = {'PRL': 0, 'RNK': 0}
+        # Only include books that are NOT finished
+        active_books = [ub for ub in user.readings if not ub.finished]
+        
+        if not active_books:
+            await update.message.reply_text(
+                "📚 You have no active books to report!\n\n"
+                "Use /my_books to add books you're currently reading.",
+                parse_mode='HTML'
+            )
+            return ConversationHandler.END
+            
+        context.user_data['report_queue'] = [ub.id for ub in active_books]
+        context.user_data['report_results'] = {'PRL': 0, 'RNK': 0}
     
-    session.close()
     return await ask_next_book_report(update, context)
 
 async def ask_next_book_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,13 +409,12 @@ async def ask_next_book_report(update: Update, context: ContextTypes.DEFAULT_TYP
         return await finish_report(update, context)
         
     ub_id = context.user_data['report_queue'][0]
-    session = Session()
-    ub = session.query(UserBook).get(ub_id)
-    book = ub.book
-    session.close()
+    with get_session_scope(Session) as session:
+        ub = session.query(UserBook).get(ub_id)
+        book_title = ub.book.title
     
     await update.message.reply_text(
-        f"📖 How many pages of <b>'{book.title}'</b> did you read?\n<i>(This will be added to your total for today)</i>",
+        f"📖 How many pages of <b>'{book_title}'</b> did you read?\n<i>(This will be added to your total for today)</i>",
         parse_mode='HTML'
     )
     return REPORT_PRL
@@ -432,57 +428,54 @@ async def report_book_progress(update: Update, context: ContextTypes.DEFAULT_TYP
             return REPORT_PRL
         
         ub_id = context.user_data['report_queue'].pop(0)
-        session = Session()
-        ub = session.query(UserBook).get(ub_id)
         
-        # Calculate how many pages we can actually add (cap at total)
-        pages_remaining = max(0, ub.total_pages - ub.current_page)
-        actual_pages = min(pages, pages_remaining)
-        
-        if pages > pages_remaining and pages_remaining > 0:
-            await update.message.reply_text(
-                f"⚠️ You only have {pages_remaining} pages left in this book!\n"
-                f"Adding {actual_pages} pages instead."
-            )
-        elif pages_remaining == 0:
-            await update.message.reply_text(f"✅ You've already finished '{ub.book.title}'! No pages added.")
-            session.close()
-            return await ask_next_book_report(update, context)
-        
-        # Update current page
-        ub.current_page += actual_pages
-        
-        # Add to category total
-        cat = ub.book.category
-        context.user_data['report_results'][cat] += actual_pages
-        
-        # Check if finished
-        if ub.current_page >= ub.total_pages:
-            ub.finished = True
-            ub.finished_date = get_today_date()
-            ub.current_page = ub.total_pages # Cap at total
+        with get_session_scope(Session) as session:
+            ub = session.query(UserBook).get(ub_id)
             
-            # Check if this was a recommended book for extra bonus
-            completion_bonus_msg = ""
-            if ub.is_recommended:
-                from recommendations import XP_COMPLETION_BONUS
-                completion_xp = 100 + XP_COMPLETION_BONUS  # Base 100 + recommended bonus
-                completion_bonus_msg = f"\n🌟 <b>RECOMMENDED BOOK COMPLETED!</b>\n🎁 <b>+{XP_COMPLETION_BONUS} XP BONUS!</b>"
-            else:
-                completion_xp = 100  # Base completion XP
+            # Calculate how many pages we can actually add (cap at total)
+            pages_remaining = max(0, ub.total_pages - ub.current_page)
+            actual_pages = min(pages, pages_remaining)
             
-            await update.message.reply_text(
-                f"🎉🎊 <b>CONGRATULATIONS!</b> 🎊🎉\n\n"
-                f"You finished <b>'{ub.book.title}'</b>!\n"
-                f"📚 {ub.total_pages} pages completed!\n\n"
-                f"🏆 <b>+{completion_xp} XP Bonus!</b>{completion_bonus_msg}",
-                parse_mode='HTML'
-            )
-            context.user_data.setdefault('finished_books_count', 0)
-            context.user_data['finished_books_count'] += 1
-        
-        session.commit()
-        session.close()
+            if pages > pages_remaining and pages_remaining > 0:
+                await update.message.reply_text(
+                    f"⚠️ You only have {pages_remaining} pages left in this book!\n"
+                    f"Adding {actual_pages} pages instead."
+                )
+            elif pages_remaining == 0:
+                await update.message.reply_text(f"✅ You've already finished '{ub.book.title}'! No pages added.")
+                return await ask_next_book_report(update, context)
+            
+            # Update current page
+            ub.current_page += actual_pages
+            
+            # Add to category total
+            cat = ub.book.category
+            context.user_data['report_results'][cat] += actual_pages
+            
+            # Check if finished
+            if ub.current_page >= ub.total_pages:
+                ub.finished = True
+                ub.finished_date = get_today_date()
+                ub.current_page = ub.total_pages # Cap at total
+                
+                # Check if this was a recommended book for extra bonus
+                completion_bonus_msg = ""
+                if ub.is_recommended:
+                    from recommendations import XP_COMPLETION_BONUS
+                    completion_xp = 100 + XP_COMPLETION_BONUS  # Base 100 + recommended bonus
+                    completion_bonus_msg = f"\n🌟 <b>RECOMMENDED BOOK COMPLETED!</b>\n🎁 <b>+{XP_COMPLETION_BONUS} XP BONUS!</b>"
+                else:
+                    completion_xp = 100  # Base completion XP
+                
+                await update.message.reply_text(
+                    f"🎉🎊 <b>CONGRATULATIONS!</b> 🎊🎉\n\n"
+                    f"You finished <b>'{ub.book.title}'</b>!\n"
+                    f"📚 {ub.total_pages} pages completed!\n\n"
+                    f"🏆 <b>+{completion_xp} XP Bonus!</b>{completion_bonus_msg}",
+                    parse_mode='HTML'
+                )
+                context.user_data.setdefault('finished_books_count', 0)
+                context.user_data['finished_books_count'] += 1
         
         return await ask_next_book_report(update, context)
     except ValueError:
@@ -490,185 +483,179 @@ async def report_book_progress(update: Update, context: ContextTypes.DEFAULT_TYP
         return REPORT_PRL
 
 async def finish_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    club = user.club
-    
-    # Get current session report
-    prl_read_now = context.user_data['report_results']['PRL']
-    rnk_read_now = context.user_data['report_results']['RNK']
-    
-    # Get existing log to accumulate
-    today = get_today_date()
-    log = session.query(DailyLog).filter_by(user_id=user.id, date=today).first()
-    
-    if not log:
-        log = DailyLog(user_id=user.id, date=today, status='pending')
-        session.add(log)
+    with get_session_scope(Session) as session:
+        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+        club = user.club
         
-    # Accumulate
-    log.pages_read_prl = (log.pages_read_prl or 0) + prl_read_now
-    log.pages_read_rnk = (log.pages_read_rnk or 0) + rnk_read_now
-    
-    # Check status based on TOTAL
-    total_prl = log.pages_read_prl
-    total_rnk = log.pages_read_rnk
-    total_all = total_prl + total_rnk
-    
-    old_status = log.status
-    new_status = 'not_read'
-    
-    # If grace period is active, user needs to read DOUBLE to achieve goal
-    multiplier = 2 if user.grace_period_active else 1
-    
-    if club.goal_type == 'OVERALL':
-        required_total = club.daily_min_total * multiplier
-        if total_all >= required_total:
-            new_status = 'achieved'
-        elif total_all > 0:
-            new_status = 'read_not_enough'
-        else:
-            new_status = 'not_read'
-    else: # SEPARATE
-        required_prl = club.daily_min_prl * multiplier
-        required_rnk = club.daily_min_rnk * multiplier
-        if total_prl >= required_prl and total_rnk >= required_rnk:
-            new_status = 'achieved'
-        elif total_prl > 0 or total_rnk > 0:
-            new_status = 'read_not_enough'
-        else:
-            new_status = 'not_read'
+        # Get current session report
+        prl_read_now = context.user_data['report_results']['PRL']
+        rnk_read_now = context.user_data['report_results']['RNK']
         
-    # Update Streak ONLY if newly achieved
-    if new_status == 'achieved' and old_status != 'achieved':
-        user.streak += 1
+        # Get existing log to accumulate
+        today = get_today_date()
+        log = session.query(DailyLog).filter_by(user_id=user.id, date=today).first()
         
-        # If grace period was active and user achieved, clear it
-        if user.grace_period_active:
-            user.grace_period_active = False
-    
-    log.status = new_status
-    
-    # XP calculation
-    xp_gained = prl_read_now * XP_PER_PAGE + rnk_read_now * XP_PER_PAGE
-    
-    # Finished books bonus
-    finished_books_count = context.user_data.get('finished_books_count', 0)
-    xp_gained += finished_books_count * XP_BOOK_FINISHED
-    
-    leveled_up = award_xp(user, xp_gained, session)
-    new_badges = check_badges(user, session)
-    
-    # Store values before closing session
-    user_level = user.level
-    badge_list = [(b.icon, b.name) for b in new_badges] if new_badges else []
-    
-    # Check if grace period was needed and achieved
-    grace_saved = user.grace_period_active and new_status == 'achieved'
-    
-    session.commit()
-    # session.close() - Removed to keep session open for club stats calculation
-    
-    # Feedback on remaining pages
-    remaining_msg = ""
-    if new_status != 'achieved':
+        if not log:
+            log = DailyLog(user_id=user.id, date=today, status='pending')
+            session.add(log)
+            
+        # Accumulate
+        log.pages_read_prl = (log.pages_read_prl or 0) + prl_read_now
+        log.pages_read_rnk = (log.pages_read_rnk or 0) + rnk_read_now
+        
+        # Check status based on TOTAL
+        total_prl = log.pages_read_prl
+        total_rnk = log.pages_read_rnk
+        total_all = total_prl + total_rnk
+        
+        old_status = log.status
+        new_status = 'not_read'
+        
+        # If grace period is active, user needs to read DOUBLE to achieve goal
+        multiplier = 2 if user.grace_period_active else 1
+        
         if club.goal_type == 'OVERALL':
-            remaining = max(0, club.daily_min_total - total_all)
-            remaining_msg = f"\n💪 <b>Keep going!</b> You need {remaining} more pages to reach your daily goal."
-        else:
-            rem_prl = max(0, club.daily_min_prl - total_prl)
-            rem_rnk = max(0, club.daily_min_rnk - total_rnk)
-            remaining_msg = f"\n💪 <b>Keep going!</b> Remaining: {rem_prl} PRL, {rem_rnk} RNK."
-    else:
-        remaining_msg = "\n🎉 <b>Daily Goal Achieved!</b> Great work!"
-
-    # Calculate club statistics for today
-    from datetime import timedelta
-    today = get_today_date()
-    
-    # Get all club members
-    club_members = session.query(User).filter(User.club_id == club.id).all()
-    total_members = len(club_members)
-    
-    # Get today's stats for all members
-    achieved_count = 0
-    read_not_enough_count = 0
-    not_read_count = 0
-    skipped_count = 0
-    
-    today_pages = {}  # user_id -> total_pages_today
-    
-    for member in club_members:
-        today_log = session.query(DailyLog).filter(
-            DailyLog.user_id == member.id,
-            DailyLog.date == today
-        ).first()
+            required_total = club.daily_min_total * multiplier
+            if total_all >= required_total:
+                new_status = 'achieved'
+            elif total_all > 0:
+                new_status = 'read_not_enough'
+            else:
+                new_status = 'not_read'
+        else: # SEPARATE
+            required_prl = club.daily_min_prl * multiplier
+            required_rnk = club.daily_min_rnk * multiplier
+            if total_prl >= required_prl and total_rnk >= required_rnk:
+                new_status = 'achieved'
+            elif total_prl > 0 or total_rnk > 0:
+                new_status = 'read_not_enough'
+            else:
+                new_status = 'not_read'
+            
+        # Update Streak ONLY if newly achieved
+        if new_status == 'achieved' and old_status != 'achieved':
+            user.streak += 1
+            
+            # If grace period was active and user achieved, clear it
+            if user.grace_period_active:
+                user.grace_period_active = False
         
-        if today_log:
-            total_pages_member = (today_log.pages_read_prl or 0) + (today_log.pages_read_rnk or 0)
-            today_pages[member.id] = total_pages_member
-            
-            if today_log.status == 'achieved':
-                achieved_count += 1
-            elif today_log.status == 'read_not_enough':
-                read_not_enough_count += 1
-            elif today_log.status == 'not_read':
-                not_read_count += 1
+        log.status = new_status
+        
+        # XP calculation
+        xp_gained = prl_read_now * XP_PER_PAGE + rnk_read_now * XP_PER_PAGE
+        
+        # Finished books bonus
+        finished_books_count = context.user_data.get('finished_books_count', 0)
+        xp_gained += finished_books_count * XP_BOOK_FINISHED
+        
+        leveled_up = award_xp(user, xp_gained, session)
+        new_badges = check_badges(user, session)
+        
+        # Store values before closing session
+        user_level = user.level
+        badge_list = [(b.icon, b.name) for b in new_badges] if new_badges else []
+        
+        # Check if grace period was needed and achieved
+        grace_saved = user.grace_period_active and new_status == 'achieved'
+        
+        # Feedback on remaining pages
+        remaining_msg = ""
+        if new_status != 'achieved':
+            if club.goal_type == 'OVERALL':
+                remaining = max(0, club.daily_min_total - total_all)
+                remaining_msg = f"\n💪 <b>Keep going!</b> You need {remaining} more pages to reach your daily goal."
+            else:
+                rem_prl = max(0, club.daily_min_prl - total_prl)
+                rem_rnk = max(0, club.daily_min_rnk - total_rnk)
+                remaining_msg = f"\n💪 <b>Keep going!</b> Remaining: {rem_prl} PRL, {rem_rnk} RNK."
         else:
-            # No log = skipped
-            skipped_count += 1
-            today_pages[member.id] = 0
-    
-    # Calculate percentages
-    achieved_pct = (achieved_count / total_members * 100) if total_members > 0 else 0
-    read_not_enough_pct = (read_not_enough_count / total_members * 100) if total_members > 0 else 0
-    not_read_pct = (not_read_count / total_members * 100) if total_members > 0 else 0
-    skipped_pct = (skipped_count / total_members * 100) if total_members > 0 else 0
-    
-    # Get user's ranking for today (by pages read)
-    sorted_users = sorted(today_pages.items(), key=lambda x: x[1], reverse=True)
-    user_rank = next((i + 1 for i, (uid, _) in enumerate(sorted_users) if uid == user.id), None)
-    
-    # Calculate days since club creation
-    club_age_days = (today - club.created_at.date()).days + 1 if hasattr(club, 'created_at') and club.created_at else 1
-    
-    session.commit()
-    session.close()
-    
-    # Build main message
-    msg = (
-        f"✅ <b>Report Saved!</b>\n"
-        f"📖 <b>Today's Total:</b> PRL: {total_prl}, RNK: {total_rnk}\n"
-        f"📊 <b>Status:</b> {new_status.replace('_', ' ').title()}\n"
-        f"{remaining_msg}\n\n"
-        f"+ {xp_gained} XP\n"
-    )
+            remaining_msg = "\n🎉 <b>Daily Goal Achieved!</b> Great work!"
 
-    if leveled_up:
-        msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user_level}!"
-    
-    if grace_saved:
-        msg += "\n\n⏰ <b>Grace Period Used!</b> You made up yesterday's missed reading! Streak preserved! 🔥"
-    
-    if badge_list:
-        msg += "\n\n🏅 <b>New Badges Unlocked:</b>"
-        for icon, name in badge_list:
-            msg += f"\n{icon} {name}"
-    
-    # Add club statistics
-    msg += f"\n\n📊 <b>Club Stats (Day {club_age_days})</b>\n"
-    msg += f"👥 Members: {total_members}\n"
-    msg += f"✅ Achieved: {achieved_count} ({achieved_pct:.0f}%)\n"
-    msg += f"📖 Read (not enough): {read_not_enough_count} ({read_not_enough_pct:.0f}%)\n"
-    msg += f"❌ Didn't read: {not_read_count} ({not_read_pct:.0f}%)\n"
-    msg += f"⏭ Skipped: {skipped_count} ({skipped_pct:.0f}%)\n"
-    
-    # Add user's ranking
-    if user_rank:
-        msg += f"\n🏆 <b>Your Today's Rank: #{user_rank}</b>"
+        # Calculate club statistics for today
+        from datetime import timedelta
+        today = get_today_date()
+        
+        # Get all club members
+        club_members = session.query(User).filter(User.club_id == club.id).all()
+        total_members = len(club_members)
+        
+        # Get today's stats for all members
+        achieved_count = 0
+        read_not_enough_count = 0
+        not_read_count = 0
+        skipped_count = 0
+        
+        today_pages = {}  # user_id -> total_pages_today
+        
+        for member in club_members:
+            today_log = session.query(DailyLog).filter(
+                DailyLog.user_id == member.id,
+                DailyLog.date == today
+            ).first()
             
-    await update.message.reply_text(msg, parse_mode='HTML')
-    return ConversationHandler.END
+            if today_log:
+                total_pages_member = (today_log.pages_read_prl or 0) + (today_log.pages_read_rnk or 0)
+                today_pages[member.id] = total_pages_member
+                
+                if today_log.status == 'achieved':
+                    achieved_count += 1
+                elif today_log.status == 'read_not_enough':
+                    read_not_enough_count += 1
+                elif today_log.status == 'not_read':
+                    not_read_count += 1
+            else:
+                # No log = skipped
+                skipped_count += 1
+                today_pages[member.id] = 0
+        
+        # Calculate percentages
+        achieved_pct = (achieved_count / total_members * 100) if total_members > 0 else 0
+        read_not_enough_pct = (read_not_enough_count / total_members * 100) if total_members > 0 else 0
+        not_read_pct = (not_read_count / total_members * 100) if total_members > 0 else 0
+        skipped_pct = (skipped_count / total_members * 100) if total_members > 0 else 0
+        
+        # Get user's ranking for today (by pages read)
+        sorted_users = sorted(today_pages.items(), key=lambda x: x[1], reverse=True)
+        user_rank = next((i + 1 for i, (uid, _) in enumerate(sorted_users) if uid == user.id), None)
+        
+        # Calculate days since club creation
+        club_age_days = (today - club.created_at.date()).days + 1 if hasattr(club, 'created_at') and club.created_at else 1
+        
+        # Build main message
+        msg = (
+            f"✅ <b>Report Saved!</b>\n"
+            f"📖 <b>Today's Total:</b> PRL: {total_prl}, RNK: {total_rnk}\n"
+            f"📊 <b>Status:</b> {new_status.replace('_', ' ').title()}\n"
+            f"{remaining_msg}\n\n"
+            f"+ {xp_gained} XP\n"
+        )
+
+        if leveled_up:
+            msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user_level}!"
+        
+        if grace_saved:
+            msg += "\n\n⏰ <b>Grace Period Used!</b> You made up yesterday's missed reading! Streak preserved! 🔥"
+        
+        if badge_list:
+            msg += "\n\n🏅 <b>New Badges Unlocked:</b>"
+            for icon, name in badge_list:
+                msg += f"\n{icon} {name}"
+        
+        # Add club statistics
+        msg += f"\n\n📊 <b>Club Stats (Day {club_age_days})</b>\n"
+        msg += f"👥 Members: {total_members}\n"
+        msg += f"✅ Achieved: {achieved_count} ({achieved_pct:.0f}%)\n"
+        msg += f"📖 Read (not enough): {read_not_enough_count} ({read_not_enough_pct:.0f}%)\n"
+        msg += f"❌ Didn't read: {not_read_count} ({not_read_pct:.0f}%)\n"
+        msg += f"⏭ Skipped: {skipped_count} ({skipped_pct:.0f}%)\n"
+        
+        # Add user's ranking
+        if user_rank:
+            msg += f"\n🏆 <b>Your Today's Rank: #{user_rank}</b>"
+                
+        await update.message.reply_text(msg, parse_mode='HTML')
+        return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operation cancelled.")
@@ -677,138 +664,138 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from utils import calculate_reading_stats
     
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    logs = user.logs
-    
-    # Generate graph
-    graph_buf = generate_contribution_graph(logs)
-    
-    # Calculate stats
-    stats = calculate_reading_stats(user)
-    
-    # Update best streak if current is higher
-    if user.streak > user.best_streak:
-        user.best_streak = user.streak
-        session.commit()
-    
-    # Progress Bar for Level
-    next_level_xp = get_xp_for_next_level(user.level)
-    prev_level_xp = get_xp_for_next_level(user.level - 1)
-    level_range = next_level_xp - prev_level_xp
-    current_progress = user.xp - prev_level_xp
-    percent = min(1.0, max(0.0, current_progress / level_range))
-    bar_len = 10
-    filled = int(bar_len * percent)
-    bar = "█" * filled + "░" * (bar_len - filled)
-    
-    badges_str = " ".join([b.badge.icon for b in user.badges]) if user.badges else "None"
-    
-    # Escape HTML special chars in name
-    import html
-    safe_name = html.escape(user.full_name)
-    club_info = f"{user.club.name} (Key: <code>{user.club.key}</code>)" if user.club else "No Club"
-    
-    # Build reading speed info
-    speed_info = ""
-    if stats['reading_speed']:
-        speed_info = "\n\n📈 <b>Reading Speed:</b>\n"
-        for book_title, days in list(stats['reading_speed'].items())[:2]:  # Show max 2 books
-            speed_info += f"• <i>{book_title}</i>: ~{days} days to finish\n"
-    
-    caption = (
-        f"👤 <b>{safe_name}</b>\n"
-        f"🏢 {club_info}\n\n"
+    with get_session_scope(Session) as session:
+        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+        if not user:
+            await update.message.reply_text("You are not registered yet. Use /start to join.")
+            return
+            
+        logs = user.logs
         
-        f"<b>📊 Level & Progress</b>\n"
-        f"🏆 Level {user.level} ({user.xp} XP)\n"
-        f"<code>[{bar}]</code> {int(percent*100)}%\n\n"
+        # Generate graph
+        graph_buf = generate_contribution_graph(logs)
         
-        f"<b>🔥 Streak Info</b>\n"
-        f"Current: {user.streak} days | Best: {stats['best_streak']} days\n\n"
+        # Calculate stats
+        stats = calculate_reading_stats(user)
         
-        f"<b>📚 Reading Stats</b>\n"
-        f"📖 Books Finished: {stats['total_books_finished']}\n"
-        f"📄 Total Pages: {stats['total_pages_read']:,}\n"
-        f"📅 Active Days: {stats['days_active']}\n\n"
+        # Update best streak if current is higher
+        if user.streak > user.best_streak:
+            user.best_streak = user.streak
+            # session.commit() # Handled by context manager
         
-        f"<b>📈 Averages</b>\n"
-        f"Last 7 days: {stats['avg_pages_week']} pages/day\n"
-        f"This month: {stats['avg_pages_month']} pages/day\n"
-        f"All time: {stats['avg_pages_all_time']} pages/day\n"
-        f"Most productive: {stats['most_productive_day']}"
-        f"{speed_info}\n"
-        f"🏅 <b>Badges:</b> {badges_str}"
-    )
-    
-    await update.message.reply_photo(photo=graph_buf, caption=caption, parse_mode='HTML')
-    session.close()
+        # Progress Bar for Level
+        next_level_xp = get_xp_for_next_level(user.level)
+        prev_level_xp = get_xp_for_next_level(user.level - 1)
+        level_range = next_level_xp - prev_level_xp
+        current_progress = user.xp - prev_level_xp
+        percent = min(1.0, max(0.0, current_progress / level_range))
+        bar_len = 10
+        filled = int(bar_len * percent)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        
+        badges_str = " ".join([b.badge.icon for b in user.badges]) if user.badges else "None"
+        
+        # Escape HTML special chars in name
+        import html
+        safe_name = html.escape(user.full_name)
+        club_info = f"{user.club.name} (Key: <code>{user.club.key}</code>)" if user.club else "No Club"
+        
+        # Build reading speed info
+        speed_info = ""
+        if stats['reading_speed']:
+            speed_info = "\n\n📈 <b>Reading Speed:</b>\n"
+            for book_title, days in list(stats['reading_speed'].items())[:2]:  # Show max 2 books
+                speed_info += f"• <i>{book_title}</i>: ~{days} days to finish\n"
+        
+        caption = (
+            f"👤 <b>{safe_name}</b>\n"
+            f"🏢 {club_info}\n\n"
+            
+            f"<b>📊 Level & Progress</b>\n"
+            f"🏆 Level {user.level} ({user.xp} XP)\n"
+            f"<code>[{bar}]</code> {int(percent*100)}%\n\n"
+            
+            f"<b>🔥 Streak Info</b>\n"
+            f"Current: {user.streak} days | Best: {stats['best_streak']} days\n\n"
+            
+            f"<b>📚 Reading Stats</b>\n"
+            f"📖 Books Finished: {stats['total_books_finished']}\n"
+            f"📄 Total Pages: {stats['total_pages_read']:,}\n"
+            f"📅 Active Days: {stats['days_active']}\n\n"
+            
+            f"<b>📈 Averages</b>\n"
+            f"Last 7 days: {stats['avg_pages_week']} pages/day\n"
+            f"This month: {stats['avg_pages_month']} pages/day\n"
+            f"All time: {stats['avg_pages_all_time']} pages/day\n"
+            f"Most productive: {stats['most_productive_day']}"
+            f"{speed_info}\n"
+            f"🏅 <b>Badges:</b> {badges_str}"
+        )
+        
+        await update.message.reply_photo(photo=graph_buf, caption=caption, parse_mode='HTML')
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    # Get current user
-    current_user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    # Top 10 by XP
-    users = session.query(User).filter(User.club_id == context.user_data.get('club_id')).order_by(User.xp.desc()).limit(10).all()
-    
-    # If club_id not in context (e.g. restart), try to get from user
-    if not users and current_user and current_user.club_id:
-        users = session.query(User).filter(User.club_id == current_user.club_id).order_by(User.xp.desc()).limit(10).all()
-    
-    import html
-    msg = "🏆 <b>Leaderboard</b> 🏆\n\n"
-    for i, u in enumerate(users):
-        # Show real name only for current user, otherwise show XXX
-        if current_user and u.id == current_user.id:
-            safe_name = html.escape(u.full_name)
-        else:
-            safe_name = "XXX"
-        msg += f"{i+1}. {safe_name} - Lvl {u.level} ({u.xp} XP)\n"
+    with get_session_scope(Session) as session:
+        # Get current user
+        current_user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-    await update.message.reply_text(msg, parse_mode='HTML')
-    session.close()
+        # Top 10 by XP
+        users = session.query(User).filter(User.club_id == context.user_data.get('club_id')).order_by(User.xp.desc()).limit(10).all()
+        
+        # If club_id not in context (e.g. restart), try to get from user
+        if not users and current_user and current_user.club_id:
+            users = session.query(User).filter(User.club_id == current_user.club_id).order_by(User.xp.desc()).limit(10).all()
+        
+        import html
+        msg = "🏆 <b>Leaderboard</b> 🏆\n\n"
+        for i, u in enumerate(users):
+            # Show real name only for current user, otherwise show XXX
+            if current_user and u.id == current_user.id:
+                safe_name = html.escape(u.full_name)
+            else:
+                safe_name = "XXX"
+            msg += f"{i+1}. {safe_name} - Lvl {u.level} ({u.xp} XP)\n"
+            
+        await update.message.reply_text(msg, parse_mode='HTML')
 
 async def badges(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from gamification import get_all_badges_with_progress
     
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    if not user:
-        await update.message.reply_text("Please join a club first with /start")
-        session.close()
-        return
+    with get_session_scope(Session) as session:
+        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-    badge_info = get_all_badges_with_progress(user, session)
-    
-    msg = "🏅 <b>Badge Collection</b> 🏅\n\n"
-    
-    # Group by type
-    earned = [b for b in badge_info if b['earned']]
-    locked = [b for b in badge_info if not b['earned']]
-    
-    if earned:
-        msg += "<b>✅ Earned Badges:</b>\n"
-        for info in earned:
-            badge = info['badge']
-            msg += f"{badge.icon} <b>{badge.name}</b>\n<i>{badge.description}</i>\n\n"
-    
-    if locked:
-        msg += "<b>🔒 Locked Badges:</b>\n"
-        for info in locked:
-            badge = info['badge']
-            progress_bar = ""
-            if info['progress']:
-                pct = info['progress_pct']
-                filled = int(pct / 10)
-                progress_bar = f"\n<code>[{'█' * filled}{'░' * (10 - filled)}]</code> {info['progress']}"
-            msg += f"{badge.icon} <b>{badge.name}</b>\n<i>{badge.description}</i>{progress_bar}\n\n"
-    
-    msg += f"\n📊 <b>Progress:</b> {len(earned)}/{len(badge_info)} badges earned"
-    
-    await update.message.reply_text(msg, parse_mode='HTML')
-    session.close()
+        if not user:
+            await update.message.reply_text("Please join a club first with /start")
+            return
+        
+        badge_info = get_all_badges_with_progress(user, session)
+        
+        msg = "🏅 <b>Badge Collection</b> 🏅\n\n"
+        
+        # Group by type
+        earned = [b for b in badge_info if b['earned']]
+        locked = [b for b in badge_info if not b['earned']]
+        
+        if earned:
+            msg += "<b>✅ Earned Badges:</b>\n"
+            for info in earned:
+                badge = info['badge']
+                msg += f"{badge.icon} <b>{badge.name}</b>\n<i>{badge.description}</i>\n\n"
+        
+        if locked:
+            msg += "<b>🔒 Locked Badges:</b>\n"
+            for info in locked:
+                badge = info['badge']
+                progress_bar = ""
+                if info['progress']:
+                    pct = info['progress_pct']
+                    filled = int(pct / 10)
+                    progress_bar = f"\n<code>[{'█' * filled}{'░' * (10 - filled)}]</code> {info['progress']}"
+                msg += f"{badge.icon} <b>{badge.name}</b>\n<i>{badge.description}</i>{progress_bar}\n\n"
+        
+        msg += f"\n📊 <b>Progress:</b> {len(earned)}/{len(badge_info)} badges earned"
+        
+        await update.message.reply_text(msg, parse_mode='HTML')
 
 async def reading_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show what books club members are currently reading"""
@@ -897,56 +884,57 @@ async def change_club(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    from admin import ADMIN_IDS
+    # Check if user is admin
+    from utils import get_admin_ids
+    admin_ids = get_admin_ids()
     
     help_text = (
         "📚 <b>Reading Club Bot - Help Guide</b> 📚\n\n"
         "<b>📖 Main Commands:</b>\n"
-        "/start - Join the reading club\n"
+        "/start - Join a reading club\n"
         "/change_club - Switch to a different club\n"
-        "/report - Submit your daily reading\n"
-        "/my_books - Manage your books\n"
-        "/profile - View stats & achievements\n"
-        "/badges - See badge collection\n"
-        "/leaderboard - Club rankings\n"
-        "/reading_now - Currently reading books\n"
-        "/help - Show this help message\n\n"
+        "/report - Submit your daily reading report\n"
+        "/my_books - Manage your books (add, update progress)\n"
+        "/profile - View your stats, streaks & achievements\n"
+        "/badges - See your badge collection & progress\n"
+        "/leaderboard - View club rankings\n"
+        "/reading_now - See what others are reading\n"
+        "/help - Show this help message\n"
+        "/cancel - Cancel current operation\n\n"
         "<b>✨ Features:</b>\n"
-        "🔥 Streak tracking with grace period\n"
+        "🔥 Streak tracking with 24-hour grace period\n"
         "⭐ XP & leveling system\n"
         "🏅 Achievement badges\n"
-        "📊 Daily club statistics\n"
-        "🗺️ Personalized reading roadmap\n"
-        "📈 Progress tracking & analytics\n"
-        "🏆 Daily rankings\n\n"
-        "<b>🎁 Bonuses:</b>\n"
-        "+50 XP for choosing recommended book\n"
-        "+100 XP extra for completing it\n"
-        "+100 XP for finishing any book\n"
+        "📊 Club statistics & rankings\n"
+        "📈 Progress tracking & analytics\n\n"
+        "<b>🎁 XP Bonuses:</b>\n"
         "+1 XP per page read\n"
-        "+10 XP for daily streak\n\n"
-        "<b>⏰ Automated Notifications:</b>\n"
-        "• 08:00 - Daily check-in\n"
-        "• 16:00 - Reading reminder\n"
-        "• 19:00 - Final reminder\n"
-        "• 22:00 - Daily summary\n"
-        "• 23:59 - Auto-close reports\n"
+        "+10 XP for maintaining daily streak\n"
+        "+100 XP for finishing a book\n\n"
+        "<b>⏰ Daily Schedule:</b>\n"
+        "• 20:00 - Daily check-in\n"
+        "• 22:00 - First reminder\n"
+        "• 23:00 - Second reminder\n"
+        "• 00:00 - Reports close (grace period starts)\n"
+        "• 08:00 - Daily summary\n"
         "• Sunday 20:00 - Weekly summary\n"
     )
     
-    if user_id in ADMIN_IDS:
+    if user_id in admin_ids:
         help_text += (
-            "\n<b>👑 Admin Commands:</b>\n"
-            "/club_stats <code>&lt;Key&gt;</code> - Detailed club analytics\n"
-            "/admin_leaderboard <code>&lt;Key&gt;</code> - De-anonymized rankings\n"
+            "\n<b>🛡️ Admin Commands:</b>\n"
+            "/create_club <code>&lt;Name&gt; &lt;Type&gt; &lt;Goals&gt;</code> - Create club\n"
+            "/add_book <code>&lt;ClubKey&gt; &lt;Title&gt; &lt;Pages&gt;</code> - Add book\n"
+            "/broadcast <code>&lt;ClubKey&gt; &lt;Message&gt;</code> - Send to all\n"
+            "/club_stats <code>&lt;ClubKey&gt;</code> - View club statistics\n"
+            "/admin_users <code>&lt;ClubKey&gt;</code> - List club members\n"
+            "/admin_books <code>&lt;ClubKey&gt;</code> - List club books\n"
+            "/admin_leaderboard <code>&lt;ClubKey&gt;</code> - Full rankings\n"
             "/view_profile <code>&lt;TelegramID&gt;</code> - View user profile\n"
-            "/create_club - Create new club\n"
-            "/add_book - Add book to library\n"
-            "/delete_book <code>&lt;ID&gt;</code> - Remove book\n"
-            "/admin_users <code>&lt;Key&gt;</code> - List members\n"
-            "/kick_user <code>&lt;ID&gt;</code> - Remove user\n"
-            "/reset_user <code>&lt;ID&gt;</code> - Reset progress\n"
-            "/broadcast <code>&lt;Msg&gt;</code> - Send to all\n"
+            "/kick_user <code>&lt;TelegramID&gt;</code> - Remove user\n"
+            "/reset_user <code>&lt;TelegramID&gt;</code> - Reset user progress\n"
+            "/delete_book <code>&lt;BookID&gt;</code> - Delete a book\n"
+            "/delete_club <code>&lt;ClubKey&gt;</code> - Delete club\n"
             "/all_clubs - List all clubs\n"
             "/all_users - List all users\n"
         )

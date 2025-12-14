@@ -11,6 +11,27 @@ def get_current_time():
 def get_today_date():
     return get_current_time().date()
 
+def get_admin_ids():
+    """Parse ADMIN_IDS from env, handling various formats (list string, comma-separated)."""
+    import os
+    import json
+    
+    env_val = os.getenv('ADMIN_IDS', '')
+    if not env_val:
+        return []
+        
+    # Try parsing as JSON first (e.g. ["123", "456"])
+    try:
+        if env_val.strip().startswith('['):
+            return [int(x) for x in json.loads(env_val)]
+    except (json.JSONDecodeError, ValueError):
+        pass
+        
+    # Fallback to comma-separated
+    # Clean up brackets and quotes just in case
+    cleaned = env_val.replace('[', '').replace(']', '').replace('"', '').replace("'", '')
+    return [int(x) for x in cleaned.split(',') if x.strip()]
+
 def generate_contribution_graph(daily_logs):
     # Calendar View (Monthly)
     import matplotlib.pyplot as plt

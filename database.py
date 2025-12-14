@@ -103,7 +103,7 @@ class DailyLog(Base):
 def init_db(db_path='sqlite:///reading_club.db'):
     engine = create_engine(db_path)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
 
 @contextmanager
 def get_session_scope(SessionFactory):

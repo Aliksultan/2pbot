@@ -1,0 +1,23 @@
+# Files to exclude when syncing to server
+# Usage: rsync -avz --exclude-from='.rsync-exclude' . root@server:/root/2pbot
+
+# Version control
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Database and state files (NEVER overwrite these on server!)
+reading_club.db
+bot_data.pickle
+
+# IDE and OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Local environment
+.env.local
