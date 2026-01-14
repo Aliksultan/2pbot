@@ -1,11 +1,10 @@
 import os
 import logging
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 from dotenv import load_dotenv
 from database import init_db, get_session_scope
-from handlers import setup_conv, report_conv, profile, leaderboard, help_command, badges, reading_now
+from handlers import setup_conv, report_conv, profile, leaderboard, help_command, badges, reading_now, stats
 from my_books_handler import my_books_conv
-from admin import admin_handlers
 from admin_panel import admin_panel_conv
 from scheduler_tasks import send_daily_checkin, send_reminder, close_questionnaire, send_daily_report, send_weekly_summary
 from pytz import timezone
@@ -13,6 +12,7 @@ from pytz import timezone
 # Load environment variables
 load_dotenv()
 
+# Logging setup
 # Logging setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -46,6 +46,7 @@ def main():
             ('report', 'Submit your daily reading'),
             ('my_books', 'Manage your books'),
             ('profile', 'View stats & achievements'),
+            ('stats', 'Detailed reading analytics'),
             ('leaderboard', 'Club rankings'),
             ('badges', 'See badge collection'),
             ('reading_now', 'Currently reading books'),
@@ -68,13 +69,28 @@ def main():
     application.add_handler(CommandHandler('badges', badges))
     application.add_handler(CommandHandler('reading_now', reading_now))
     application.add_handler(CommandHandler('help', help_command))
+    application.add_handler(CommandHandler('stats', stats))
+    
+    # Callbacks
+    from handlers import view_finished_books
+    application.add_handler(CallbackQueryHandler(view_finished_books, pattern="^view_finished_books_"))
     
     # Admin Panel (interactive)
     application.add_handler(admin_panel_conv)
     
-    # Legacy admin commands (fallback)
-    for handler in admin_handlers:
-        application.add_handler(handler)
+    # Error handler for graceful exception logging
+    async def error_handler(update, context):
+        """Log errors caused by updates."""
+        logging.error(f"Exception while handling an update: {context.error}")
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "❌ An error occurred. Please try again later."
+                )
+            except Exception:
+                pass
+    
+    application.add_error_handler(error_handler)
         
     # Setup Scheduler
     job_queue = application.job_queue

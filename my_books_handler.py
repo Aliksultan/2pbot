@@ -1,6 +1,6 @@
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-from database import init_db, User, Book, UserBook
+from database import init_db, User, Book, UserBook, ActionLog
 
 Session = init_db()
 
@@ -206,6 +206,19 @@ async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE
             if leveled_up:
                 bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
         
+                bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
+        
+        # Log Action
+        book = session.query(Book).get(book_id)
+        session.add(ActionLog(
+            user_id=user.id,
+            telegram_id=user.telegram_id,
+            user_name=user.full_name,
+            action_type='ADD_USER_BOOK',
+            details=f"Added '{book.title}' as finished",
+            club_id=user.club_id
+        ))
+
         session.commit()
         session.close()
         
@@ -246,6 +259,19 @@ async def mb_add_already_read(update: Update, context: ContextTypes.DEFAULT_TYPE
             if leveled_up:
                 bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
         
+                bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
+        
+        # Log Action
+        book = session.query(Book).get(book_id)
+        session.add(ActionLog(
+            user_id=user.id,
+            telegram_id=user.telegram_id,
+            user_name=user.full_name,
+            action_type='ADD_USER_BOOK',
+            details=f"Added '{book.title}' (Starting fresh)",
+            club_id=user.club_id
+        ))
+
         session.commit()
         session.close()
         
@@ -298,6 +324,19 @@ async def mb_add_current_page(update: Update, context: ContextTypes.DEFAULT_TYPE
             if leveled_up:
                 bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
         
+                bonus_msg += f"\n🌟 <b>LEVEL UP!</b> You are now Level {user.level}!"
+        
+        # Log Action
+        book = session.query(Book).get(book_id)
+        session.add(ActionLog(
+            user_id=user.id,
+            telegram_id=user.telegram_id,
+            user_name=user.full_name,
+            action_type='ADD_USER_BOOK',
+            details=f"Added '{book.title}' ({current_page}/{total_pages} pages)",
+            club_id=user.club_id
+        ))
+
         session.commit()
         session.close()
         

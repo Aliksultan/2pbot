@@ -45,8 +45,11 @@ async def close_questionnaire(context: ContextTypes.DEFAULT_TYPE):
         users = session.query(User).all()
         today = get_today_date()
         
+        # Close yesterday's questionnaire (since this runs at 00:00)
+        yesterday = today - datetime.timedelta(days=1)
+        
         for user in users:
-            log = session.query(DailyLog).filter_by(user_id=user.id, date=today).first()
+            log = session.query(DailyLog).filter_by(user_id=user.id, date=yesterday).first()
             
             # User achieved their goal today - clear any grace period and continue
             if log and log.status == 'achieved':
@@ -87,7 +90,7 @@ async def close_questionnaire(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         chat_id=user.telegram_id,
                         text="⏰ <b>Grace Period Activated!</b>\n\n"
-                             "You missed today's reading goal. ⚠️\n\n"
+                             "You missed your daily reading goal. ⚠️\n\n"
                              "📚 <b>Good news:</b> You have 24 hours to make it up!\n"
                              "Read <b>DOUBLE</b> your daily goal tomorrow to preserve your streak.\n\n"
                              f"🔥 Current streak: {user.streak} days (at risk)",

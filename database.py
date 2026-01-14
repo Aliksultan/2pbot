@@ -37,7 +37,7 @@ class Book(Base):
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
     username = Column(String)
     full_name = Column(String)
     club_id = Column(Integer, ForeignKey('clubs.id'), nullable=True)
@@ -92,13 +92,27 @@ class UserBadge(Base):
 class DailyLog(Base):
     __tablename__ = 'daily_logs'
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    date = Column(Date, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+    date = Column(Date, nullable=False, index=True)
     pages_read_prl = Column(Integer, default=0)
     pages_read_rnk = Column(Integer, default=0)
     status = Column(String, default='pending') # achieved, read_not_enough, not_read, missed
     
     user = relationship("User", back_populates="logs")
+
+class ActionLog(Base):
+    __tablename__ = 'action_logs'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True) # Nullable for system events or deleted users
+    telegram_id = Column(Integer, nullable=True) # Store separately in case user is deleted
+    user_name = Column(String, nullable=True) # Store snapshot of name
+    action_type = Column(String, nullable=False) # 'REPORT', 'JOIN', 'CREATE_CLUB', 'ADD_BOOK', 'KICK', etc.
+    details = Column(String)
+    timestamp = Column(DateTime, default=datetime.now)
+    club_id = Column(Integer, ForeignKey('clubs.id'), nullable=True)
+    
+    user = relationship("User")
+    club = relationship("Club")
 
 def init_db(db_path='sqlite:///reading_club.db'):
     engine = create_engine(db_path)

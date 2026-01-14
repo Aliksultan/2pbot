@@ -8,18 +8,18 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, CommandHandler, 
     CallbackQueryHandler, MessageHandler, filters
 )
-from database import init_db, Club, Book, User, DailyLog, UserBook, get_session_scope
-from utils import get_admin_ids
+from database import init_db, Club, Book, User, DailyLog, UserBook, ActionLog, get_session_scope
+from utils import get_admin_ids, get_today_date
+from admin_cancel import cancel_handler
 import uuid
 
 Session = init_db()
 
-# Conversation states
-MAIN_MENU, CLUB_MENU, BOOK_MENU, USER_MENU, STATS_MENU = range(5)
-CREATE_CLUB_NAME, CREATE_CLUB_TYPE, CREATE_CLUB_GOALS_PRL, CREATE_CLUB_GOALS_RNK, CREATE_CLUB_GOALS_TOTAL = range(5, 10)
-ADD_BOOK_CLUB, ADD_BOOK_TITLE, ADD_BOOK_PAGES = range(10, 13)
-BROADCAST_CLUB, BROADCAST_MESSAGE = range(13, 15)
-SELECT_USER, CONFIRM_ACTION = range(15, 17)
+MAIN_MENU, CLUB_MENU, BOOK_MENU, USER_MENU, STATS_MENU, LOGS_MENU = range(6)
+CREATE_CLUB_NAME, CREATE_CLUB_TYPE, CREATE_CLUB_GOALS_PRL, CREATE_CLUB_GOALS_RNK, CREATE_CLUB_GOALS_TOTAL = range(6, 11)
+ADD_BOOK_CLUB, ADD_BOOK_TITLE, ADD_BOOK_PAGES = range(11, 14)
+BROADCAST_CLUB, BROADCAST_MESSAGE = range(14, 16)
+SELECT_USER, CONFIRM_ACTION = range(16, 18)
 
 
 def admin_only_callback(func):
@@ -50,6 +50,7 @@ def build_main_menu():
         ],
         [
             InlineKeyboardButton("📢 Broadcast", callback_data="menu_broadcast"),
+            InlineKeyboardButton("📜 Logs", callback_data="menu_logs"),
         ],
         [
             InlineKeyboardButton("❌ Close", callback_data="close_panel"),
@@ -218,6 +219,29 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         return BROADCAST_CLUB
+    
+    elif data == "menu_logs":
+        # Show recent activity logs
+        with get_session_scope(Session) as session:
+            logs = session.query(ActionLog).order_by(ActionLog.timestamp.desc()).limit(20).all()
+            
+            if not logs:
+                text = "📜 <b>Activity Logs</b>\n\nNo activity recorded yet."
+            else:
+                text = "📜 <b>Activity Logs</b> (Last 20)\n\n"
+                for log in logs:
+                    time_str = log.timestamp.strftime("%m/%d %H:%M") if log.timestamp else "?"
+                    user_str = log.user_name or f"ID:{log.telegram_id}" or "System"
+                    action = log.action_type or "UNKNOWN"
+                    details = log.details[:50] + "..." if log.details and len(log.details) > 50 else (log.details or "")
+                    text += f"<code>{time_str}</code> <b>{action}</b>\n  {user_str}: {details}\n\n"
+            
+            await query.edit_message_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=build_back_button("back_main")
+            )
+        return LOGS_MENU
     
     elif data == "close_panel":
         await query.edit_message_text("Admin panel closed.")
@@ -814,9 +838,7 @@ async def user_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("viewuser_"):
         user_id = int(data.split("_")[1])
         with get_session_scope(Session) as session:
-            from utils import calculate_reading_stats, generate_contribution_graph
-            from gamification import get_xp_for_next_level
-            import html
+            from utils import generate_contribution_graph, generate_profile_message, calculate_reading_stats
             
             user = session.query(User).filter_by(id=user_id).first()
             
@@ -835,53 +857,13 @@ async def user_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Calculate stats
             stats = calculate_reading_stats(user)
             
-            # Progress Bar for Level
-            next_level_xp = get_xp_for_next_level(user.level)
-            prev_level_xp = get_xp_for_next_level(user.level - 1)
-            level_range = next_level_xp - prev_level_xp
-            current_progress = user.xp - prev_level_xp
-            percent = min(1.0, max(0.0, current_progress / level_range)) if level_range > 0 else 0
-            bar_len = 10
-            filled = int(bar_len * percent)
-            bar = "█" * filled + "░" * (bar_len - filled)
+            # Generate Profile Caption
+            caption = generate_profile_message(user, stats)
             
-            badges_str = " ".join([b.badge.icon for b in user.badges]) if user.badges else "None"
-            
-            safe_name = html.escape(user.full_name)
-            club_info = f"{user.club.name}" if user.club else "No Club"
-            
-            # Build reading speed info
-            speed_info = ""
-            if stats['reading_speed']:
-                speed_info = "\n\n📈 <b>Reading Speed:</b>\n"
-                for book_title, days in list(stats['reading_speed'].items())[:2]:
-                    speed_info += f"• <i>{book_title}</i>: ~{days} days to finish\n"
-            
-            caption = (
-                f"👤 <b>{safe_name}</b>\n"
-                f"🏢 {club_info}\n"
-                f"🆔 <code>{user.telegram_id}</code>\n\n"
-                
-                f"<b>📊 Level & Progress</b>\n"
-                f"🏆 Level {user.level} ({user.xp} XP)\n"
-                f"<code>[{bar}]</code> {int(percent*100)}%\n\n"
-                
-                f"<b>🔥 Streak Info</b>\n"
-                f"Current: {user.streak} days | Best: {stats['best_streak']} days\n\n"
-                
-                f"<b>📚 Reading Stats</b>\n"
-                f"📖 Books Finished: {stats['total_books_finished']}\n"
-                f"📄 Total Pages: {stats['total_pages_read']:,}\n"
-                f"📅 Active Days: {stats['days_active']}\n\n"
-                
-                f"<b>📈 Averages</b>\n"
-                f"Last 7 days: {stats['avg_pages_week']} pages/day\n"
-                f"This month: {stats['avg_pages_month']} pages/day\n"
-                f"All time: {stats['avg_pages_all_time']} pages/day\n"
-                f"Most productive: {stats['most_productive_day']}"
-                f"{speed_info}\n"
-                f"🏅 <b>Badges:</b> {badges_str}"
-            )
+            # Add Finished Books Button
+            # NOTE: We use a special callback for admin panel to keep state or just show info
+            # We will use 'admin_finished_books_<id>' to distinguish
+            keyboard = [[InlineKeyboardButton("📚 Finished Books", callback_data=f"admin_finished_books_{user.id}")]]
             
             # Delete the callback message and send photo
             await query.message.delete()
@@ -889,9 +871,47 @@ async def user_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=query.message.chat_id,
                 photo=graph_buf,
                 caption=caption,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        return USER_MENU
+
+    elif data.startswith("admin_finished_books_"):
+        user_id = int(data.split("_")[3])
+        
+        with get_session_scope(Session) as session:
+            user = session.query(User).filter_by(id=user_id).first()
+            if not user:
+                await query.answer("User not found.")
+                return USER_MENU
+                
+            finished_books = [ub for ub in user.readings if ub.finished]
+            if not finished_books:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=f"📚 <b>{user.full_name} has not finished any books yet.</b>",
+                    parse_mode='HTML'
+                )
+                return USER_MENU
+
+            # Sort by finished date (descending)
+            finished_books.sort(key=lambda x: x.finished_date if x.finished_date else x.id, reverse=True)
+            
+            msg = f"📚 <b>Finished Books - {user.full_name}</b>\n\n"
+            for ub in finished_books:
+                date_str = ub.finished_date.strftime("%Y-%m-%d") if ub.finished_date else "Unknown"
+                msg += f"✅ <i>{ub.book.title}</i> ({ub.book.category})\n"
+                msg += f"   📅 Finished: {date_str}\n"
+                if ub.is_recommended:
+                    msg += "   ⭐ Recommended Pick\n"
+                msg += "\n"
+                
+            await context.bot.send_message(
+                chat_id=query.message.chat_id, 
+                text=msg, 
                 parse_mode='HTML'
             )
-        return ConversationHandler.END
+        return USER_MENU
     
     elif data == "user_kick":
         with get_session_scope(Session) as session:
@@ -1182,14 +1202,66 @@ async def stats_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     elif data.startswith("leaderboard_"):
         club_id = int(data.split("_")[1])
+        # Ask for leaderboard type
+        keyboard = [
+            [InlineKeyboardButton("📅 Today's Leaderboard", callback_data=f"lb_type_daily_{club_id}")],
+            [InlineKeyboardButton("🏆 All-Time Leaderboard", callback_data=f"lb_type_overall_{club_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="stats_leaderboard")]
+        ]
+        
+        await query.edit_message_text(
+            "📊 <b>Select Leaderboard Type</b>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return STATS_MENU
+        
+    elif data.startswith("lb_type_daily_"):
+        club_id = int(data.split("_")[3])
+        today = get_today_date()
+        
+        with get_session_scope(Session) as session:
+            club = session.query(Club).filter_by(id=club_id).first()
+            
+            # Get all club members
+            members = session.query(User).filter_by(club_id=club_id).all()
+            
+            # Calculate pages read today for each member
+            member_pages = []
+            for member in members:
+                log = session.query(DailyLog).filter_by(user_id=member.id, date=today).first()
+                pages = (log.pages_read_prl or 0) + (log.pages_read_rnk or 0) if log else 0
+                member_pages.append((member, pages))
+            
+            # Sort by pages descending
+            sorted_members = sorted(member_pages, key=lambda x: x[1], reverse=True)
+            
+            if not sorted_members:
+                text = f"📅 <b>Daily Leaderboard - {club.name}</b>\n\nNo activity today."
+            else:
+                text = f"📅 <b>Daily Leaderboard - {club.name}</b>\n\n"
+                medals = ["🥇", "🥈", "🥉"]
+                for i, (user, pages) in enumerate(sorted_members, 1):
+                    medal = medals[i-1] if i <= 3 else f"{i}."
+                    text += f"{medal} <b>{user.full_name}</b>: {pages} pages\n"
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=build_back_button(f"leaderboard_{club_id}")
+        )
+        return STATS_MENU
+
+    elif data.startswith("lb_type_overall_"):
+        club_id = int(data.split("_")[3])
         with get_session_scope(Session) as session:
             club = session.query(Club).filter_by(id=club_id).first()
             users = session.query(User).filter_by(club_id=club_id).order_by(User.xp.desc()).all()
             
             if not users:
-                text = f"🏆 <b>Leaderboard - {club.name}</b>\n\nNo users yet."
+                text = f"🏆 <b>All-Time Leaderboard - {club.name}</b>\n\nNo users yet."
             else:
-                text = f"🏆 <b>Leaderboard - {club.name}</b>\n\n"
+                text = f"🏆 <b>All-Time Leaderboard - {club.name}</b>\n\n"
                 medals = ["🥇", "🥈", "🥉"]
                 for i, user in enumerate(users, 1):
                     medal = medals[i-1] if i <= 3 else f"{i}."
@@ -1198,7 +1270,7 @@ async def stats_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(
             text,
             parse_mode='HTML',
-            reply_markup=build_back_button("back_stats")
+            reply_markup=build_back_button(f"leaderboard_{club_id}")
         )
         return STATS_MENU
     
@@ -1314,6 +1386,9 @@ admin_panel_conv = ConversationHandler(
             CallbackQueryHandler(back_to_main, pattern="^back_main$"),
             CallbackQueryHandler(stats_menu_handler),
         ],
+        LOGS_MENU: [
+            CallbackQueryHandler(back_to_main, pattern="^back_main$"),
+        ],
         BROADCAST_CLUB: [
             CallbackQueryHandler(back_to_main, pattern="^back_main$"),
             CallbackQueryHandler(broadcast_handler),
@@ -1355,8 +1430,9 @@ admin_panel_conv = ConversationHandler(
         ],
     },
     fallbacks=[
-        CommandHandler('cancel', lambda u, c: ConversationHandler.END),
+        CommandHandler('cancel', cancel_handler),
         CallbackQueryHandler(cancel_action, pattern="^cancel_action$"),
     ],
     per_message=False,
+    allow_reentry=True
 )

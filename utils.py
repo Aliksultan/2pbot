@@ -99,10 +99,9 @@ def generate_contribution_graph(daily_logs):
                     status_color = '#c0392b' # Red
                     status_text = "✕"
             elif day < today.day:
-                # Past day with no log -> Missed (or just empty if we want to be lenient)
-                # Let's assume empty means missed if it's in the past
-                status_color = '#c0392b'
-                status_text = "✕"
+                # Past day with no log -> Skipped
+                status_color = '#95a5a6' # Gray
+                status_text = "»"
             elif day == today.day:
                  status_color = '#34495e' # Today pending
             
@@ -162,9 +161,14 @@ def calculate_reading_stats(user):
     stats['total_pages_read'] = sum((l.pages_read_prl or 0) + (l.pages_read_rnk or 0) for l in logs)
     stats['days_active'] = len([l for l in logs if l.status in ['achieved', 'read_not_enough']])
     stats['total_books_finished'] = len([ub for ub in user.readings if ub.finished])
+    stats['total_books_count'] = len(user.club.books) if user.club else 0
     
     # Average calculations
     today = get_today_date()
+    
+    # Today's pages
+    today_log = next((l for l in logs if l.date == today), None)
+    stats['today_pages_read'] = (today_log.pages_read_prl or 0) + (today_log.pages_read_rnk or 0) if today_log else 0
     
     # Last 7 days
     week_ago = today - timedelta(days=7)
@@ -210,3 +214,63 @@ def calculate_reading_stats(user):
                 stats['reading_speed'][ub.book.title] = days_to_finish
     
     return stats
+
+def generate_profile_message(user, stats):
+    """Generate the formatted profile caption string."""
+    from gamification import get_xp_for_next_level
+    import html
+ 
+    # Progress Bar for Level
+    next_level_xp = get_xp_for_next_level(user.level)
+    prev_level_xp = get_xp_for_next_level(user.level - 1)
+    level_range = next_level_xp - prev_level_xp
+    current_progress = user.xp - prev_level_xp
+    percent = min(1.0, max(0.0, current_progress / level_range))
+    bar_len = 10
+    filled = int(bar_len * percent)
+    bar = "█" * filled + "░" * (bar_len - filled)
+    
+    badges_str = " ".join([b.badge.icon for b in user.badges]) if user.badges else "None"
+    
+    # Escape HTML special chars in name
+    safe_name = html.escape(user.full_name)
+    club_info = f"{user.club.name} (Key: <code>{user.club.key}</code>)" if user.club else "No Club"
+    
+    # Build currently reading info
+    reading_now = [ub for ub in user.readings if not ub.finished]
+    current_books_info = ""
+    if reading_now:
+        current_books_info = "\n\n📖 <b>Currently Reading:</b>\n"
+        for ub in reading_now:
+            progress = int((ub.current_page / ub.total_pages) * 100)
+            
+            # Check for reading speed estimate
+            speed_str = ""
+            if ub.book.title in stats['reading_speed']:
+                days = stats['reading_speed'][ub.book.title]
+                speed_str = f" (~{days} days left)"
+            
+            current_books_info += f"• {ub.book.title}: {ub.current_page}/{ub.total_pages} ({progress}%){speed_str}\n"
+    
+    # Calculate books finished stats
+    total_finished = stats['total_books_finished']
+    total_books = stats.get('total_books_count', total_finished) # Fallback if not updated in utils yet for some reason
+    finished_pct = int((total_finished / total_books) * 100) if total_books > 0 else 0
+    
+    caption = (
+        f"👤 <b>{safe_name}</b> (Level {user.level})\n"
+        f"🏅 Rank: Member\n"
+        f"🏰 Club: {club_info}\n\n"
+        f"🔥 Streak: {stats['current_streak']} (Best: {stats['best_streak']})\n"
+        f"⭐️ XP: {user.xp} / {next_level_xp}\n"
+        f"[{bar}] {int(percent*100)}%\n\n"
+        f"🏆 Badges: {badges_str}\n\n"
+        f"📊 <b>Stats:</b>\n"
+        f"• Today's Pages: {stats['today_pages_read']}\n"
+        f"• Avg Pages (Week): {stats['avg_pages_week']}\n"
+        f"• Avg Pages (Month): {stats['avg_pages_month']}\n"
+        f"• Total Pages: {stats['total_pages_read']}\n"
+        f"📖 Books Finished: {total_finished}/{total_books} ({finished_pct}%)\n"
+        f"{current_books_info}"
+    )
+    return caption
